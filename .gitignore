@@ -1,0 +1,6 @@
+.nyc_output
+.wercker
+node_modules
+build
+coverage
+docs

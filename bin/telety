@@ -1,0 +1,7 @@
+#! /usr/bin/env node
+
+const { CLI } = require('@jib/cli');
+
+new CLI()
+  .parse(process.argv)
+  .then(() => { /* all done */ });

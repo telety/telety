@@ -1,0 +1,28 @@
+box: node:alpine
+build:
+  steps:
+    # install dependencies with `npm ci`
+    - mvandervliet/npm-ci
+    # npm run build
+    - script:
+        name: build project
+        code: |
+          npm run build
+
+test: 
+  steps:
+    # test
+    - npm-test
+
+lint:
+  steps:
+    # run linter
+    - script:
+        name: lint
+        code: |
+          npm run lint
+
+publish:
+  steps:
+    # publish to npm registry using NPM_TOKEN
+    - mariosant/npm-publish
