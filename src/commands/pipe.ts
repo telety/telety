@@ -1,17 +1,25 @@
-import { Command, BaseCommand, Plugin } from '@jib/cli';
+import { Command, BaseCommand } from '@jib/cli';
 
+import { EOL } from 'os';
+import { Writable } from 'stream';
 import * as url from 'url';
 import * as readline from 'readline';
-import * as childProcess from 'child_process';
 
 import { ChildPromise, child } from '../lib/child';
 import { HttpClient } from '../lib/http';
-import { EOL } from 'os';
 
-const RegLF = /\\$/;
+const REG = {
+  LF: /\\$/,
+  TRAILSPC: /\s+$/g,
+  GUID: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+};
 
 const CONTROLS = {
-  QUIT: ['CTRL-D', 'quit', 'exit'],
+  QUIT: ['ctrl-d', 'quit', 'exit'],
+};
+
+const CONST = {
+  XAUTH: 'X-Auth-Token',
 }
 
 type Chunk = string;
@@ -27,52 +35,105 @@ export interface IPipeOptions {
     { flag: '-t, --auth-token <token>', description: 'Telety.io authentication token' }
   ],
   args: [
-    { name: 'webhook', description: 'Telety.io webhook URL', optional: false }
+    { name: 'webhookURL', description: 'Telety.io webhook URL', optional: false }
   ],
 })
 export class PipeCommand extends BaseCommand {
   private options: IPipeOptions;
   // http
   private http = new HttpClient();
-  private token: string;
+  private jwToken: string;
   private webhook: url.Url;
   // prompting
   private readonly history: string[] = [];
   private hMarker: number = 0;
-  private chunk: string[];
+  private chunk: string[] = [];
   private disconnected: boolean;
   private rl: readline.Interface;
   private resolve: (chunks: string[]) => void;
   private cancel: () => void;
   // execution
-  private child: childProcess.ChildProcess;
+  private child: child.ChildProcess;
   private succeeded: boolean = null;
 
   public help(): void {
     // this.ui.output(...)
   }
 
-  // public async run(options: IPipeOptions, ...args: string[]) {
+  /**
+   * command runner
+   * @param options
+   * @param webhook
+   */
   public async run(options: IPipeOptions, webhook: string) {
     this.options = options;
     this.webhook = url.parse(webhook);
+    // initialize and start prompt
     await this.init();
     this.next();
   }
 
+  /**
+   * obtain the user authentication token
+   * @param options
+   */
   private async getToken(options: IPipeOptions): Promise<void> {
-    this.token = this.options.authToken;
-    // if (options.authToken) {
-    //   this.warn('It is not recommended to provide auth token with flag');
-    // }
-    // this.token = options.authToken ||
-    //   await this.ask.prompt({
-    //     type: 'password',
-    //     name: 'token',
-    //     message: 'Provide a telety.io auth token:',
-    //   }).then(ans => ans.token);
+    let { authToken } = options;
+    const { TELETY_TOKEN } = process.env;
+    const { cyan, yellow, red, green, bold, dim } = this.ui.color;
+
+    if (authToken) { // from flag
+      this.warn(`Use ${yellow('TELETY_TOKEN')} environment variable for improved security`);
+    } else if (TELETY_TOKEN) { // from env
+      authToken = TELETY_TOKEN;
+    } else { // prompt
+      authToken = await new Promise<string>(resolve => {
+        // create noop writeable stream
+        const secWriter = new Writable({
+          write: (chunk: any, encoding: string, cb) => cb(),
+        });
+        // open readline with this output
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: secWriter,
+          terminal: true,
+        });
+        // prompt
+        // this.ui.output(bold(cyan('Enter Auth Token:')));
+        process.stdout.write(bold(cyan('Enter auth token: ')));
+        rl.question(null, token => {
+          rl.close();
+          resolve(token);
+        });
+      });
+    }
+    // verify guid
+    if (!REG.GUID.test(authToken || '')) {
+      throw new Error('Invalid auth token');
+    }
+
+    // request JWT
+    this.ui.append(dim('telety.connecting...'));
+    const tokenURL = `${this.webhook.protocol}//${this.webhook.host}/auth/token`;
+    try {
+      const auth = await this.http.request(tokenURL, {
+        method: 'POST',
+        headers: {
+          [CONST.XAUTH]: authToken,
+        }
+      });
+      // this.ui.output(dim('telety.connected') + ' ' +  green('✔'));
+      this.ui.append(green('✔'));
+      this.jwToken = auth.headers[CONST.XAUTH.toLowerCase()] as string;
+    } catch (e) {
+      this.ui.append(red('✘'));
+      throw(e);
+    }
   }
 
+  /**
+   * initialize the runtime
+   */
   private async init() {
     const { dim } = this.ui.color;
     process.on('SIGINT', async () => await this._teardown(0));
@@ -80,7 +141,7 @@ export class PipeCommand extends BaseCommand {
     await this.getToken(this.options);
 
     // show controls
-    this.ui.outputSection('Controls', this.ui.grid([
+    this.ui.outputSection('telety.controls', this.ui.grid([
       [CONTROLS.QUIT.join('|'), dim('Signal end of transmission: EOT')],
     ])).output();
 
@@ -96,10 +157,11 @@ export class PipeCommand extends BaseCommand {
         }
       }
     });
-
   }
 
-
+  /**
+   * get the readline interface
+   */
   private getRl(): readline.Interface {
     // init readline
     return this.rl || readline.createInterface({
@@ -112,27 +174,39 @@ export class PipeCommand extends BaseCommand {
       .on('SIGINT', () => this.rlInterrupt()); // CTRL-C
   }
 
+  /**
+   * clear the readline output
+   */
   private clearRl(): void {
     return this.rl && this.rl.write(null, { ctrl: true, name: 'u' });
   }
 
+  /**
+   * get the readline prompt string
+   */
   private rlPrompt(): string {
     const { red, green, yellow, dim } = this.ui.color;
     const p: string[] = [yellow('telety.pipe')];
     if (null != this.succeeded) {
-      p.push(this.succeeded ? green('✔') : red('✘'));
+      p.push(dim(this.succeeded ? green('✔') : red('✘')));
     }
     p.push(dim('$> '));
     return p.join(' ');
   }
 
-  private rlConnect() {
+  /**
+   * create a readline interface
+   */
+  private rlConnect(): void {
     this.rl = this.getRl();
     this.disconnected = false;
     this.hMarker = this.history.length;
   }
 
-  private rlDisconnect() {
+  /**
+   * close the readline (without exit)
+   */
+  private rlDisconnect(): void {
     this.disconnected = true;
     this.rl.close();
     this.rl = null;
@@ -147,7 +221,9 @@ export class PipeCommand extends BaseCommand {
     }
   }
 
-
+  /**
+   * CTRL-C handler on the readline
+   */
   private rlInterrupt() {
     // resolve null to start new
     return this.resolve && this.resolve(null);
@@ -173,7 +249,7 @@ export class PipeCommand extends BaseCommand {
       this.rlConnect();
 
       // set hooks
-      this.resolve = (chunks: string[]) => {
+      this.resolve = (chunks: Chunk[]) => {
         this.resolve = null;
         resolve(chunks);
       };
@@ -199,8 +275,8 @@ export class PipeCommand extends BaseCommand {
       return;
     }
 
-    const raw = text.map(t => t.replace(RegLF, '')).join(EOL);
-    const cmd = text.map(t => t.replace(RegLF, '')).join(' ');
+    const raw = text.join(EOL);
+    const cmd = text.map(t => t.replace(REG.LF, '')).join(' ');
 
     // handle quit
     if (CONTROLS.QUIT.indexOf(cmd) > -1) {
@@ -229,32 +305,28 @@ export class PipeCommand extends BaseCommand {
     this.child = null;
   }
 
-  private async post(input: string): Promise<void> {
-    const headers = {
-      'X-Auth-Token': this.token,
-    };
-    //
-    await this.http.request(this.webhook.href, {
-      method: 'POST',
-      headers,
-      body: {
-        input,
-      }
-    }).catch(e => this.warn(e));
-  }
-
   /**
    * accept rl line input
    * @param line
    */
   private line(line: string) {
-    const chunk = line.trim();
+    const chunk = line.replace(REG.TRAILSPC, '');
     if (chunk) {
       this.chunk.push(chunk);
-      if (chunk && !RegLF.test(chunk)) { // not new line, resolve
+      if (chunk && !REG.LF.test(chunk)) { // not new line, resolve
         this.resolve(this.chunk);
       }
     }
+  }
+
+  private async post(input: string): Promise<void> {
+    const headers = { 'authorization': `Bearer ${this.jwToken}` };
+    //
+    await this.http.request(this.webhook.href, {
+      method: 'POST',
+      headers,
+      body: { input }
+    }).catch(e => this.warn(e));
   }
 
   /**
