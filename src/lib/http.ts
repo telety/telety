@@ -41,13 +41,12 @@ export class HttpClient {
 
       // setup request
       const u = URL.parse(url);
-      const endpoint = url;
+      const lib = u.protocol === 'https:' ? https : http;
       if (typeof query === 'object') {
-        url = url + (url.indexOf('?') === -1 ? '?' : '&') + querystring.stringify(query);
+        url = `${u.protocol}//${u.host}${u.path}?${Object.assign(query, u.query || {})}`;
       }
 
       // start request
-      const lib = u.protocol === 'https:' ? https : http;
       const request = lib.request(url, options, response => {
         let data = '';
         // handle response

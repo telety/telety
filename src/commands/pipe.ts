@@ -235,6 +235,8 @@ export class PipeCommand extends BaseCommand {
     };
     //
     await this.http.request(this.webhook.href, {
+      method: 'POST',
+      headers,
       body: {
         input,
       }
