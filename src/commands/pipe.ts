@@ -1,11 +1,9 @@
 import { Command, BaseCommand, Plugin } from '@jib/cli';
-import { JibPrompt } from '@jib/prompt';
 
 import * as url from 'url';
 import * as readline from 'readline';
 import * as childProcess from 'child_process';
 
-// import * as ora from 'ora';
 import { ChildPromise, child } from '../lib/child';
 import { HttpClient } from '../lib/http';
 import { EOL } from 'os';
@@ -50,9 +48,6 @@ export class PipeCommand extends BaseCommand {
   private child: childProcess.ChildProcess;
   private succeeded: boolean = null;
 
-  @Plugin(JibPrompt)
-  private ask: JibPrompt;
-
   public help(): void {
     // this.ui.output(...)
   }
@@ -66,15 +61,16 @@ export class PipeCommand extends BaseCommand {
   }
 
   private async getToken(options: IPipeOptions): Promise<void> {
-    if (options.authToken) {
-      this.warn('It is not recommended to provide auth token with flag');
-    }
-    this.token = options.authToken ||
-      await this.ask.prompt({
-        type: 'password',
-        name: 'token',
-        message: 'Provide a telety.io auth token:',
-      }).then(ans => ans.token);
+    this.token = this.options.authToken;
+    // if (options.authToken) {
+    //   this.warn('It is not recommended to provide auth token with flag');
+    // }
+    // this.token = options.authToken ||
+    //   await this.ask.prompt({
+    //     type: 'password',
+    //     name: 'token',
+    //     message: 'Provide a telety.io auth token:',
+    //   }).then(ans => ans.token);
   }
 
   private async init() {
