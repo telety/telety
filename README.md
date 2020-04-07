@@ -1,4 +1,4 @@
-# TeletyCli Command Line
+# Telety.io Command Line
 
 ## About
 
@@ -11,5 +11,3 @@ command line generator.
 npm install -g @telety/cli
 telety --help
 ```
-
-
