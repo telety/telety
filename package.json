@@ -1,5 +1,5 @@
 {
-  "name": "@telety/cli",
+  "name": "@telety/telety",
   "version": "0.0.1-beta",
   "scripts": {
     "build": "tsc",

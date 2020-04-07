@@ -1,7 +1,7 @@
 import { Command, BaseCommand, Plugin } from '@jib/cli';
 import { JibPrompt } from '@jib/prompt';
 
-import * as util from 'util'
+import * as url from 'url';
 import * as readline from 'readline';
 import * as childProcess from 'child_process';
 
@@ -16,24 +16,28 @@ const CONTROLS = {
   QUIT: ['CTRL-D', 'quit', 'exit'],
 }
 
+type Chunk = string;
+
 export interface IPipeOptions {
   // define invocation option types here
   authToken?: string;
 }
 
 @Command({
-  description: 'Pipe inputs to a Telety channel webhook',
+  description: 'Create TTY session piping stdin to a channel webhook',
   options: [
     { flag: '-t, --auth-token <token>', description: 'Telety.io authentication token' }
   ],
   args: [
-    {name: 'webhook', description: 'Telety.io webhook URL', optional: false }
+    { name: 'webhook', description: 'Telety.io webhook URL', optional: false }
   ],
 })
 export class PipeCommand extends BaseCommand {
-  private http = new HttpClient();
   private options: IPipeOptions;
+  // http
+  private http = new HttpClient();
   private token: string;
+  private webhook: url.Url;
   // prompting
   private readonly history: string[] = [];
   private hMarker: number = 0;
@@ -56,6 +60,7 @@ export class PipeCommand extends BaseCommand {
   // public async run(options: IPipeOptions, ...args: string[]) {
   public async run(options: IPipeOptions, webhook: string) {
     this.options = options;
+    this.webhook = url.parse(webhook);
     await this.init();
     this.next();
   }
@@ -166,7 +171,7 @@ export class PipeCommand extends BaseCommand {
   /**
    * begin prompt
    */
-  private prompt() : Promise<string> {
+  private prompt() : Promise<Chunk[]> {
     return new Promise((resolve, reject) => {
       this.chunk = [];
       this.rlConnect();
@@ -174,7 +179,7 @@ export class PipeCommand extends BaseCommand {
       // set hooks
       this.resolve = (chunks: string[]) => {
         this.resolve = null;
-        resolve((chunks || []).join(' '));
+        resolve(chunks);
       };
       this.cancel = () => {
         this.chunk = [];
@@ -190,27 +195,35 @@ export class PipeCommand extends BaseCommand {
    * process input text
    * @param text
    */
-  private async processInput(text: string): Promise<void> {
+  private async processInput(text: Chunk[]): Promise<void> {
 
-    if (!text) {
+    if (!text || !text.length) {
       // clear line
       this.clearRl();
       return;
     }
 
+    const raw = text.map(t => t.replace(RegLF, '')).join(EOL);
+    const cmd = text.map(t => t.replace(RegLF, '')).join(' ');
+
     // handle quit
-    if (CONTROLS.QUIT.indexOf(text) > -1) {
+    if (CONTROLS.QUIT.indexOf(cmd) > -1) {
       return this._teardown(0);
     }
-    this.history.push(text);
+
+    // push history
+    this.history.push(cmd);
+
     // disconnect readline to allow inherit stdio
     this.rlDisconnect();
 
     // execute command from `text`
-    this.child = child.spawn(text, {
+    this.child = child.spawn(cmd, {
       stdio: 'inherit',
       shell: true,
     });
+
+    this.post(raw);
 
     await ChildPromise
       .resolve(this.child)
@@ -220,6 +233,18 @@ export class PipeCommand extends BaseCommand {
     this.child = null;
   }
 
+  private async post(input: string): Promise<void> {
+    const headers = {
+      'X-Auth-Token': this.token,
+    };
+    //
+    await this.http.request(this.webhook.href, {
+      body: {
+        input,
+      }
+    }).catch(e => this.warn(e));
+  }
+
   /**
    * accept rl line input
    * @param line
@@ -227,7 +252,7 @@ export class PipeCommand extends BaseCommand {
   private line(line: string) {
     const chunk = line.trim();
     if (chunk) {
-      this.chunk.push(chunk.replace(RegLF, ''));
+      this.chunk.push(chunk);
       if (chunk && !RegLF.test(chunk)) { // not new line, resolve
         this.resolve(this.chunk);
       }
@@ -254,7 +279,7 @@ export class PipeCommand extends BaseCommand {
       return;
     }
     this.ui.output();
-    this.ui.output(dim('telety disconnected'));
+    this.ui.output(dim('telety.disconnected'));
     process.exit(code);
   }
 }
