@@ -24,7 +24,7 @@ const CONST = {
 
 type Chunk = string;
 
-export interface IPipeOptions {
+export interface HostOptions {
   // define invocation option types here
   authToken?: string;
 }
@@ -32,14 +32,14 @@ export interface IPipeOptions {
 @Command({
   description: 'Create TTY session piping stdin to a channel webhook',
   options: [
-    { flag: '-t, --auth-token <token>', description: 'Telety.io authentication token' }
+    { flag: '-t, --auth-token <token>', description: 'telety.io authentication token' }
   ],
   args: [
-    { name: 'webhookURL', description: 'Telety.io webhook URL', optional: false }
+    { name: 'webhookURL', description: 'telety.io webhook URL', optional: false }
   ],
 })
 export class PipeCommand extends BaseCommand {
-  private options: IPipeOptions;
+  private options: HostOptions;
   // http
   private http = new HttpClient();
   private jwToken: string;
@@ -65,7 +65,7 @@ export class PipeCommand extends BaseCommand {
    * @param options
    * @param webhook
    */
-  public async run(options: IPipeOptions, webhook: string) {
+  public async run(options: HostOptions, webhook: string) {
     this.options = options;
     this.webhook = url.parse(webhook);
     // initialize and start prompt
@@ -77,7 +77,7 @@ export class PipeCommand extends BaseCommand {
    * obtain the user authentication token
    * @param options
    */
-  private async getToken(options: IPipeOptions): Promise<void> {
+  private async getToken(options: HostOptions): Promise<void> {
     let { authToken } = options;
     const { TELETY_TOKEN } = process.env;
     const { cyan, yellow, red, green, bold, dim } = this.ui.color;
@@ -186,7 +186,7 @@ export class PipeCommand extends BaseCommand {
    */
   private rlPrompt(): string {
     const { red, green, yellow, dim } = this.ui.color;
-    const p: string[] = [yellow('telety.pipe')];
+    const p: string[] = [yellow('telety.host')];
     if (null != this.succeeded) {
       p.push(dim(this.succeeded ? green('✔') : red('✘')));
     }
@@ -325,7 +325,12 @@ export class PipeCommand extends BaseCommand {
     await this.http.request(this.webhook.href, {
       method: 'POST',
       headers,
-      body: { input }
+      body: {
+        type: 'message',
+        payload: {
+          input,
+        }
+      }
     }).catch(e => this.warn(e));
   }
 
