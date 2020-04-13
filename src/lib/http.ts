@@ -55,7 +55,7 @@ export class HttpClient {
           .on('end', () => {
             const { headers, statusCode } = response;
             // parse json
-            if (headers['content-type'] === 'application/json') {
+            if (~headers['content-type'].indexOf('application/json')) {
               data = JSON.parse(data);
             }
             const res: HttpResponse = { statusCode, headers, data };

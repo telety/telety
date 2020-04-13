@@ -8,14 +8,17 @@ import * as readline from 'readline';
 import { ChildPromise, child } from '../lib/child';
 import { HttpClient } from '../lib/http';
 
+
+const CONTROLS = {
+  QUIT: ['ctrl-d', 'quit', 'exit'],
+  COMMENT: '#',
+};
+
 const REG = {
   LF: /\\$/,
   TRAILSPC: /\s+$/g,
   GUID: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-};
-
-const CONTROLS = {
-  QUIT: ['ctrl-d', 'quit', 'exit'],
+  COMMENT: new RegExp(`^${CONTROLS.COMMENT}\\s*`),
 };
 
 const CONST = {
@@ -23,6 +26,25 @@ const CONST = {
 }
 
 type Chunk = string;
+
+interface PromptResult {
+  id?: string;
+  input: Chunk;
+}
+
+enum WebhookType {
+  MESSAGE = 'message',
+  COMMENT = 'comment',
+};
+interface WebhookPayload extends Record<WebhookType, any> {
+  [WebhookType.MESSAGE]: { input: string },
+  [WebhookType.COMMENT]: { id: string, comment: string },
+}
+
+interface WebhookResponse {
+  id: string;
+  channel: string;
+}
 
 export interface HostOptions {
   // define invocation option types here
@@ -38,14 +60,14 @@ export interface HostOptions {
     { name: 'webhookURL', description: 'telety.io webhook URL', optional: false }
   ],
 })
-export class PipeCommand extends BaseCommand {
+export class HostCommand extends BaseCommand {
   private options: HostOptions;
   // http
   private http = new HttpClient();
   private jwToken: string;
   private webhook: url.Url;
   // prompting
-  private readonly history: string[] = [];
+  private readonly history: PromptResult[] = [];
   private hMarker: number = 0;
   private chunk: string[] = [];
   private disconnected: boolean;
@@ -143,6 +165,7 @@ export class PipeCommand extends BaseCommand {
     // show controls
     this.ui.outputSection('telety.controls', this.ui.grid([
       [CONTROLS.QUIT.join('|'), dim('Signal end of transmission: EOT')],
+      [[CONTROLS.COMMENT, dim('<comment>')].join(' '), dim('Add comment to the most recent input')],
     ])).output();
 
     // handle up/down
@@ -153,7 +176,9 @@ export class PipeCommand extends BaseCommand {
           // clamp to bounds
           this.hMarker = Math.min(Math.max(this.hMarker, 0), this.history.length);
           this.clearRl();
-          this.rl.write(this.history[this.hMarker] || '');
+          const entry = this.history[this.hMarker];
+          const line = entry ? entry.input : '';
+          this.rl.write(line);
         }
       }
     });
@@ -172,6 +197,20 @@ export class PipeCommand extends BaseCommand {
     }).on('line', l => this.line(l))
       .on('close', () => this.rlClosed()) // CTRL-D, or explicit
       .on('SIGINT', () => this.rlInterrupt()); // CTRL-C
+  }
+
+  /**
+   * accept rl line input
+   * @param line
+   */
+  private line(line: string) {
+    const chunk = line.replace(REG.TRAILSPC, '');
+    if (chunk) {
+      this.chunk.push(chunk);
+      if (chunk && !REG.LF.test(chunk)) { // not new line, resolve
+        this.resolve(this.chunk);
+      }
+    }
   }
 
   /**
@@ -275,27 +314,33 @@ export class PipeCommand extends BaseCommand {
       return;
     }
 
-    const raw = text.join(EOL);
-    const cmd = text.map(t => t.replace(REG.LF, '')).join(' ');
+    const raw = text.join(EOL); // raw input (with \EOL)
+    const input = text.map(t => t.replace(REG.LF, '')).join(' ');
 
-    // handle quit
-    if (CONTROLS.QUIT.indexOf(cmd) > -1) {
+    // handle controls
+    if (CONTROLS.QUIT.indexOf(input) > -1) { // quit
       return this._teardown(0);
+    } else if (REG.COMMENT.test(input)) { // comment
+      this.appendComment(input);
+      return;
     }
-
-    // push history
-    this.history.push(cmd);
 
     // disconnect readline to allow inherit stdio
     this.rlDisconnect();
 
     // execute command from `text`
-    this.child = child.spawn(cmd, {
+    this.child = child.spawn(input, {
       stdio: 'inherit',
       shell: true,
     });
 
-    this.post(raw);
+    // push history record
+    const hist: PromptResult = { input };
+    this.history.push(hist);
+
+    // post to webhook
+    this.callWebhook(WebhookType.MESSAGE, { input: raw })
+      .then(res => res && (hist.id = res.id)); // assign messageId result to history object
 
     await ChildPromise
       .resolve(this.child)
@@ -305,33 +350,25 @@ export class PipeCommand extends BaseCommand {
     this.child = null;
   }
 
-  /**
-   * accept rl line input
-   * @param line
-   */
-  private line(line: string) {
-    const chunk = line.replace(REG.TRAILSPC, '');
-    if (chunk) {
-      this.chunk.push(chunk);
-      if (chunk && !REG.LF.test(chunk)) { // not new line, resolve
-        this.resolve(this.chunk);
-      }
+  private async appendComment(input: string) {
+    const comment = input.replace(REG.COMMENT, '');
+    const last = this.history[this.history.length - 1];
+    if (!last) {
+      return this.warn('Input must be submitted before a comment can be added');
     }
+    return this.callWebhook(WebhookType.COMMENT, { id: last.id, comment });
   }
 
-  private async post(input: string): Promise<void> {
+  private async callWebhook<T extends WebhookType>(type: T, payload: WebhookPayload[T] ): Promise<WebhookResponse> {
     const headers = { 'authorization': `Bearer ${this.jwToken}` };
-    //
-    await this.http.request(this.webhook.href, {
+    // post to webhook
+    return await this.http.request(this.webhook.href, {
       method: 'POST',
       headers,
-      body: {
-        type: 'message',
-        payload: {
-          input,
-        }
-      }
-    }).catch(e => this.warn(e));
+      body: { type, payload },
+    })
+    .then(r => r.data)
+    .catch(e => this.warn(e));
   }
 
   /**
@@ -339,7 +376,7 @@ export class PipeCommand extends BaseCommand {
    */
   private warn(msg: string): void {
     const { red, dim } = this.ui.color;
-    this.ui.output(red('WARNING:'), dim(msg));
+    this.ui.output(red('telety.warn:'), dim(msg));
   }
 
   /**
@@ -347,7 +384,7 @@ export class PipeCommand extends BaseCommand {
    * @param code exit code
    */
   private async _teardown(code: number): Promise<never> {
-    const { yellow, dim } = this.ui.color;
+    const { dim } = this.ui.color;
     if (this.child) {
       this.child.kill(code);
       this.child = null;
