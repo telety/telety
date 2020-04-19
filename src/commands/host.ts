@@ -49,12 +49,14 @@ interface WebhookResponse {
 export interface HostOptions {
   // define invocation option types here
   authToken?: string;
+  promptText: string;
 }
 
 @Command({
   description: 'Create TTY session piping stdin to a channel webhook',
   options: [
-    { flag: '-t, --auth-token <token>', description: 'telety.io authentication token' }
+    { flag: '-t, --auth-token <token>', description: 'telety.io authentication token' },
+    { flag: '-p, --prompt-text <text>', description: 'customize host prompt text', default: 'telety'},
   ],
   args: [
     { name: 'webhookURL', description: 'telety.io webhook URL', optional: false }
@@ -135,7 +137,7 @@ export class HostCommand extends BaseCommand {
     }
 
     // request JWT
-    this.ui.append(dim('telety.connecting...'));
+    this.ui.append(dim(`telety.connecting...`));
     const tokenURL = `${this.webhook.protocol}//${this.webhook.host}/auth/token`;
     try {
       const auth = await this.http.request(tokenURL, {
@@ -163,10 +165,12 @@ export class HostCommand extends BaseCommand {
     await this.getToken(this.options);
 
     // show controls
-    this.ui.outputSection('telety.controls', this.ui.grid([
-      [CONTROLS.QUIT.join('|'), dim('Signal end of transmission: EOT')],
-      [[CONTROLS.COMMENT, dim('<comment>')].join(' '), dim('Add comment to the most recent input')],
+    this.ui.outputSection(dim('telety.controls'), this.ui.grid([
+      [dim(CONTROLS.QUIT.join('|')), dim('Signal end of transmission: EOT')],
+      [dim(CONTROLS.COMMENT + ' <comment>'), dim('Add comment to the most recent input')],
     ])).output();
+
+    this.ui.output(dim('------------------'));
 
     // handle up/down
     process.stdin.on('keypress', (c, k) => {
@@ -225,7 +229,7 @@ export class HostCommand extends BaseCommand {
    */
   private rlPrompt(): string {
     const { red, green, yellow, dim } = this.ui.color;
-    const p: string[] = [yellow('telety.host')];
+    const p: string[] = [yellow(this.options.promptText)];
     if (null != this.succeeded) {
       p.push(dim(this.succeeded ? green('✔') : red('✘')));
     }
