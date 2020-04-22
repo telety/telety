@@ -1,5 +1,7 @@
 # Telety.io Command Line
 
+[![wercker status](https://app.wercker.com/status/bd2efdcdeabbace2f652b2ffc7798b04/s/master "wercker status")](https://app.wercker.com/project/byKey/bd2efdcdeabbace2f652b2ffc7798b04)
+
 ## Usage
 
 ```shell

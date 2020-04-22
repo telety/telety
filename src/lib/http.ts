@@ -20,10 +20,18 @@ export interface HttpResponse {
  */
 export class HttpClient {
 
+  private readonly _defaults: Partial<HttpOptions> = {};
   /**
    * Configure client
    */
   constructor() {
+  }
+
+  public configure(options: Partial<HttpOptions>): this {
+    const { headers = {} } = this._defaults;
+    Object.assign(this._defaults, options);
+    Object.assign(headers, options.headers || {});
+    return this;
   }
 
   /**
@@ -32,18 +40,18 @@ export class HttpClient {
    * @param {HttpOptions} [options] - https request options @see https://nodejs.org/api/https.html#https_https_request_url_options_callback
    * @returns {Promise<HttpResponse>}
    */
-  request(url: string, options: HttpOptions): Promise<HttpResponse> {
+  public request(url: string, options: HttpOptions): Promise<HttpResponse> {
     return new Promise((resolve, reject) => {
       // process options
       options = options || { };
       let { body } = options;
       const { query } = options;
 
-      // setup request
+      // setup request url
       const u = URL.parse(url);
       const lib = u.protocol === 'https:' ? https : http;
       if (typeof query === 'object') {
-        url = `${u.protocol}//${u.host}${u.path}?${Object.assign(query, u.query || {})}`;
+        url = `${u.protocol}//${u.host}${u.path}?${querystring.stringify(Object.assign(query, u.query || {}))}`;
       }
 
       // start request

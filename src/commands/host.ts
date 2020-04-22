@@ -7,30 +7,9 @@ import * as readline from 'readline';
 
 import { ChildPromise, child } from '../lib/child';
 import { HttpClient } from '../lib/http';
-
-
-const CONTROLS = {
-  QUIT: ['ctrl-d', 'quit', 'exit'],
-  COMMENT: '#',
-};
-
-const REG = {
-  LF: /\\$/,
-  TRAILSPC: /\s+$/g,
-  GUID: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-5][0-9a-f]{3}-[089ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-  COMMENT: new RegExp(`^${CONTROLS.COMMENT}\\s*`),
-};
-
-const CONST = {
-  XAUTH: 'X-Auth-Token',
-}
-
-type Chunk = string;
-
-interface PromptResult {
-  id?: string;
-  input: Chunk;
-}
+import { REG, HEADERS } from '../lib/constants';
+import { CONTROLS } from '../lib/controls';
+import { authenticate } from '../lib/auth';
 
 enum WebhookType {
   MESSAGE = 'message',
@@ -40,7 +19,6 @@ interface WebhookPayload extends Record<WebhookType, any> {
   [WebhookType.MESSAGE]: { input: string },
   [WebhookType.COMMENT]: { id: string, comment: string },
 }
-
 interface WebhookResponse {
   id: string;
   channel: string;
@@ -66,8 +44,8 @@ export class HostCommand extends BaseCommand {
   private options: HostOptions;
   // http
   private http = new HttpClient();
-  private jwToken: string;
   private webhook: url.Url;
+  private jwToken: string;
   // prompting
   private readonly history: PromptResult[] = [];
   private hMarker: number = 0;
@@ -75,7 +53,6 @@ export class HostCommand extends BaseCommand {
   private disconnected: boolean;
   private rl: readline.Interface;
   private resolve: (chunks: string[]) => void;
-  private cancel: () => void;
   // execution
   private child: child.ChildProcess;
   private succeeded: boolean = null;
@@ -98,71 +75,14 @@ export class HostCommand extends BaseCommand {
   }
 
   /**
-   * obtain the user authentication token
-   * @param options
-   */
-  private async getToken(options: HostOptions): Promise<void> {
-    let { authToken } = options;
-    const { TELETY_TOKEN } = process.env;
-    const { cyan, yellow, red, green, bold, dim } = this.ui.color;
-
-    if (authToken) { // from flag
-      this.warn(`Use ${yellow('TELETY_TOKEN')} environment variable for improved security`);
-    } else if (TELETY_TOKEN) { // from env
-      authToken = TELETY_TOKEN;
-    } else { // prompt
-      authToken = await new Promise<string>(resolve => {
-        // create noop writeable stream
-        const secWriter = new Writable({
-          write: (chunk: any, encoding: string, cb) => cb(),
-        });
-        // open readline with this output
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: secWriter,
-          terminal: true,
-        });
-        // prompt
-        // this.ui.output(bold(cyan('Enter Auth Token:')));
-        process.stdout.write(bold(cyan('Enter auth token: ')));
-        rl.question(null, token => {
-          rl.close();
-          resolve(token);
-        });
-      });
-    }
-    // verify guid
-    if (!REG.GUID.test(authToken || '')) {
-      throw new Error('Invalid auth token');
-    }
-
-    // request JWT
-    this.ui.append(dim(`telety.connecting...`));
-    const tokenURL = `${this.webhook.protocol}//${this.webhook.host}/auth/token`;
-    try {
-      const auth = await this.http.request(tokenURL, {
-        method: 'POST',
-        headers: {
-          [CONST.XAUTH]: authToken,
-        }
-      });
-      // this.ui.output(dim('telety.connected') + ' ' +  green('✔'));
-      this.ui.append(green('✔'));
-      this.jwToken = auth.headers[CONST.XAUTH.toLowerCase()] as string;
-    } catch (e) {
-      this.ui.append(red('✘'));
-      throw(e);
-    }
-  }
-
-  /**
    * initialize the runtime
    */
   private async init() {
     const { dim } = this.ui.color;
     process.on('SIGINT', async () => await this._teardown(0));
     // obtain token
-    await this.getToken(this.options);
+    const jwt = await authenticate(this.webhook, this.options.authToken);
+    // await this.getToken(this.options);
 
     // show controls
     this.ui.outputSection(dim('telety.controls'), this.ui.grid([
