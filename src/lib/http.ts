@@ -40,10 +40,13 @@ export class HttpClient {
    * @param {HttpOptions} [options] - https request options @see https://nodejs.org/api/https.html#https_https_request_url_options_callback
    * @returns {Promise<HttpResponse>}
    */
-  public request(url: string, options: HttpOptions): Promise<HttpResponse> {
+  public request(url: string, options: HttpOptions = {}): Promise<HttpResponse> {
     return new Promise((resolve, reject) => {
       // process options
-      options = options || { };
+      options = {
+        ...this._defaults,
+        ...options,
+      };
       let { body } = options;
       const { query } = options;
 

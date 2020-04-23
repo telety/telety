@@ -16,18 +16,19 @@ const HTTP = new HttpClient();
  * @param apiUrl a telety api endpoint
  * @param authn telety user auth token
  */
-export async function authenticate(apiUrl: string | url.Url, authn?: AuthnToken): Promise<AuthzToken> {
+export async function TeletyAuth(apiUrl: string | url.Url, authn?: AuthnToken): Promise<AuthzToken> {
   const { TELETY_TOKEN } = process.env;
   const { cyan, yellow, red, green, bold, dim } = UI.color;
   let ant = authn;
   if (ant) { // from flag
-    UI.output(red('telety.warn'), `Use ${yellow('TELETY_TOKEN')} environment variable for improved security`);
+    UI.output(red('telety.warn') + ':', `Use ${yellow('TELETY_TOKEN')} environment variable for improved security`);
   } else if (TELETY_TOKEN) { // from env
     ant = TELETY_TOKEN;
   } else { // prompt
-    const input = Prompt.secure();
-    ant = await input.question(bold(cyan('Enter auth token: ')));
-    input.close();
+    const prompt = Prompt.secure();
+    ant = await prompt.question(bold(cyan('Enter auth token: ')));
+    prompt.close();
+    UI.output();
   }
   // verify guid
   if (!REG.GUID.test(ant || '')) {
@@ -46,7 +47,7 @@ export async function authenticate(apiUrl: string | url.Url, authn?: AuthnToken)
     UI.append(green('✔'));
     return auth.headers[HEADERS.XAUTH.toLowerCase()] as string;
   } catch (e) {
-    UI.append(red('✘'));
+    UI.append(red('✘')).output();
     throw (e);
   }
 }

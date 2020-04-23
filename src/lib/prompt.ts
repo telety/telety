@@ -1,8 +1,4 @@
-
-import * as url from 'url';
 import * as readline from 'readline';
-
-import { EOL } from 'os';
 import { Writable } from 'stream';
 import { REG } from './constants';
 
@@ -13,22 +9,33 @@ export interface PromptResult {
   input: Chunk;
 }
 
+export interface PromptOptions extends Partial<readline.ReadLineOptions> {
+  historyExclusions?: RegExp[];
+}
+
 export class Prompt {
   public static defaults: Partial<readline.ReadLineOptions> = {
     input: process.stdin,
     output: process.stdout,
+    tabSize: 2,
+    historySize: 0, // managed separately
   };
-  public static readonly history: PromptResult[];
+  public static readonly history: PromptResult[] = [];
 
-  protected readonly _options: readline.ReadLineOptions;
+  protected readonly _options: PromptOptions;
   protected readonly _rl: readline.Interface;
-  protected _chunks: Chunk[] = [];
-  protected _resolve: (chunks: Chunk[]) => void;
-
+  // history
   protected readonly _history = [...Prompt.history];
   protected _historyMarker: number = this._history.length;
+  // state
+  protected _chunks: Chunk[] = [];
+  protected _resolver: (chunks: Chunk[]) => void;
 
-  public static secure(options?: readline.ReadLineOptions): Prompt {
+  /**
+   * create a secure prompt
+   * @param options
+   */
+  public static secure(options?: PromptOptions): Prompt {
     return new this({
       input: process.stdin,
       terminal: true,
@@ -39,40 +46,82 @@ export class Prompt {
     }, true);
   }
 
-  public static init(options?: readline.ReadLineOptions): Prompt {
-    return new this(options);
+  public static init(options?: PromptOptions): Prompt {
+    return new this(options as PromptOptions);
   }
 
-  constructor(options: readline.ReadLineOptions, protected readonly secure?: boolean) {
+  public static last(): PromptResult {
+    return this.history[this.history.length - 1];
+  }
+
+  constructor(options: PromptOptions, protected readonly secure?: boolean) {
     this._options = {
       ...Prompt.defaults,
       ...options,
     };
 
-    this._rl = readline.createInterface(this._options);
+    this.close = this.close.bind(this);
+    this.clear = this.clear.bind(this);
+    this.cancel = this.cancel.bind(this);
+    this.onLine = this.onLine.bind(this);
+    this.onKeypress = this.onKeypress.bind(this);
+    // initialize
+    this._rl = readline.createInterface(this._options as readline.ReadLineOptions);
     this._attachEvents();
   }
 
+  public interface(): readline.Interface {
+    return this._rl;
+  }
+
   private _attachEvents(): void {
-    // keypress
-    this.keypress = this.keypress.bind(this);
-    this._options.input.on('keypress', this.keypress);
+    this._options.input.on('keypress', this.onKeypress);
   }
 
   private _detachEvents(): void {
-    this._options.input.off('keypress', this.keypress);
+    this._options.input.off('keypress', this.onKeypress);
+  }
+
+  /**
+   * finish the prompt and resolve the input(s)
+   * @param chunks input chunks
+   */
+  private _finish(chunks: Chunk[]): void {
+    this._addHistory(chunks);
+    // resolve
+    const r = this._resolver;
+    this._resolver = null;
+    return r && r(chunks);
+  }
+
+  /**
+   * add history
+   * @param chunks raw chunks
+   */
+  private _addHistory(chunks: Chunk[]): void {
+    if (chunks && chunks.length) { // add history
+      const { historyExclusions } = this._options;
+      const input = chunks.map(t => t.replace(REG.LF, '')).join(' ');
+      if (historyExclusions && historyExclusions.some(ex => ex.test(input))) {
+        return;
+      }
+      const hist: PromptResult = { input };
+      this._history.push(hist);
+      Prompt.history.push(hist);
+    }
   }
 
   /**
    * accept rl line input
    * @param line
    */
-  private line(line: string) {
+  private onLine(line: Chunk) {
     const chunk = line.replace(REG.TRAILSPC, '');
     if (chunk) {
       this._chunks.push(chunk);
       if (chunk && !REG.LF.test(chunk)) { // not new line, resolve
-        this._resolve(this._chunks);
+        this._finish(this._chunks);
+        this._chunks = [];
       }
     }
   }
@@ -82,22 +131,20 @@ export class Prompt {
    * @param code the key code
    * @param key the key object
    */
-  private keypress(code: any, key: any): void {
+  private onKeypress(code: any, key: any): void {
     if (['up', 'down'].indexOf(key.name) > -1) {
-      const history = this._history;
-      this._historyMarker += (key.name === 'up' ? -1 : 1);
-      // clamp to bounds
-      this._historyMarker = Math.min(Math.max(this._historyMarker, 0), history.length);
-      const entry = history[this._historyMarker];
-      const line = entry ? entry.input : '';
-      // update
-      this.clear();
-      this._rl.write(line);
+      if (!this._chunks.length) {
+        const history = this._history;
+        this._historyMarker += (key.name === 'up' ? -1 : 1);
+        // clamp to bounds
+        this._historyMarker = Math.min(Math.max(this._historyMarker, 0), history.length);
+        const entry = history[this._historyMarker];
+        const line = entry ? entry.input : '';
+        // update prompt
+        this.clear();
+        this.interface().write(line);
+      }
     }
-  }
-
-  public interface(): readline.Interface {
-    return this._rl;
   }
 
   /**
@@ -114,35 +161,51 @@ export class Prompt {
   /**
    * begin prompt
    */
-  public open(): Promise<Chunk[]> {
+  public multiline(): Promise<Chunk[]> {
     return new Promise(resolve => {
+      // set resolver
+      this._resolver = resolve;
+      // prep start
+      this._historyMarker = this._history.length;
       this._chunks = [];
-      // this.rlConnect();
+      const rl = this.interface()
+        .on('line', this.onLine)
+        .on('SIGINT', this.clear); // handle CTRL-C (to clear)
 
-      // set hooks
-      this._resolve = (chunks: Chunk[]) => {
-        this._resolve = null;
-        resolve(chunks);
-      };
       // begin
-      this._rl.prompt();
+      rl.prompt();
     });
   }
-
-  public close(): void {
-    this._detachEvents();
-    this._rl.close();
-  }
-
-  // public terminate(): void {
-  //   this._rl.close();
-  // }
 
   /**
    * clear the readline output
    */
   public clear(): void {
-    return this._rl && this._rl.write(null, { ctrl: true, name: 'u' });
+    return this.interface()
+      .write(null, { ctrl: true, name: 'u' });
+  }
+
+  /**
+   * cancel current prompt (resolves null)
+   */
+  public async cancel(): Promise<void> {
+    return this._finish(null);
+  }
+
+  /**
+   * close the prompt
+   */
+  public close(): void {
+    this._detachEvents();
+    this._resolver = null;
+    this.interface().close(); // this will trigger the `SIGINT` on the readline
+  }
+
+  /**
+   * test if the prompt is active
+   */
+  public isActive(): boolean {
+    return !!this._resolver;
   }
 
 };

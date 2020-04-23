@@ -1,15 +1,14 @@
 import { Command, BaseCommand } from '@jib/cli';
 
 import { EOL } from 'os';
-import { Writable } from 'stream';
 import * as url from 'url';
-import * as readline from 'readline';
 
 import { ChildPromise, child } from '../lib/child';
 import { HttpClient } from '../lib/http';
-import { REG, HEADERS } from '../lib/constants';
+import { REG } from '../lib/constants';
 import { CONTROLS } from '../lib/controls';
-import { authenticate } from '../lib/auth';
+import { TeletyAuth } from '../lib/auth';
+import { Prompt, Chunk, PromptResult } from '../lib/prompt';
 
 enum WebhookType {
   MESSAGE = 'message',
@@ -28,13 +27,15 @@ export interface HostOptions {
   // define invocation option types here
   authToken?: string;
   promptText: string;
+  mock: boolean;
 }
 
 @Command({
   description: 'Create TTY session piping stdin to a channel webhook',
   options: [
     { flag: '-t, --auth-token <token>', description: 'telety.io authentication token' },
-    { flag: '-p, --prompt-text <text>', description: 'customize host prompt text', default: 'telety'},
+    { flag: '-p, --prompt-text <text>', description: 'customize host prompt text', default: 'telety' },
+    { flag: '-M, --mock', description: 'enable mock mode', hidden: true },
   ],
   args: [
     { name: 'webhookURL', description: 'telety.io webhook URL', optional: false }
@@ -42,23 +43,17 @@ export interface HostOptions {
 })
 export class HostCommand extends BaseCommand {
   private options: HostOptions;
+  private webhook: url.Url;
   // http
   private http = new HttpClient();
-  private webhook: url.Url;
-  private jwToken: string;
   // prompting
-  private readonly history: PromptResult[] = [];
-  private hMarker: number = 0;
-  private chunk: string[] = [];
-  private disconnected: boolean;
-  private rl: readline.Interface;
-  private resolve: (chunks: string[]) => void;
+  private io: Prompt;
   // execution
   private child: child.ChildProcess;
   private succeeded: boolean = null;
 
   public help(): void {
-    // this.ui.output(...)
+    // no extra help yet
   }
 
   /**
@@ -78,118 +73,68 @@ export class HostCommand extends BaseCommand {
    * initialize the runtime
    */
   private async init() {
+    const { mock } = this.options;
     const { dim } = this.ui.color;
     process.on('SIGINT', async () => await this._teardown(0));
-    // obtain token
-    const jwt = await authenticate(this.webhook, this.options.authToken);
-    // await this.getToken(this.options);
 
-    // show controls
+    if (!mock) {
+      // obtain token & configure http
+      const token = await TeletyAuth(this.webhook, this.options.authToken);
+      this.http.configure({
+        headers: { authorization: `Bearer ${token}` },
+      });
+    }
+
+    // print controls
     this.ui.outputSection(dim('telety.controls'), this.ui.grid([
       [dim(CONTROLS.QUIT.join('|')), dim('Signal end of transmission: EOT')],
       [dim(CONTROLS.COMMENT + ' <comment>'), dim('Add comment to the most recent input')],
-    ])).output();
-
-    this.ui.output(dim('------------------'));
-
-    // handle up/down
-    process.stdin.on('keypress', (c, k) => {
-      if (this.rl) {
-        if (['up', 'down'].indexOf(k.name) > -1) {
-          this.hMarker += (k.name === 'up' ? -1 : 1);
-          // clamp to bounds
-          this.hMarker = Math.min(Math.max(this.hMarker, 0), this.history.length);
-          this.clearRl();
-          const entry = this.history[this.hMarker];
-          const line = entry ? entry.input : '';
-          this.rl.write(line);
-        }
-      }
-    });
+    ])).output(dim('------------------')).output();
   }
 
   /**
    * get the readline interface
    */
-  private getRl(): readline.Interface {
-    // init readline
-    return this.rl || readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      tabSize: 2,
-      prompt: this.rlPrompt(),
-    }).on('line', l => this.line(l))
-      .on('close', () => this.rlClosed()) // CTRL-D, or explicit
-      .on('SIGINT', () => this.rlInterrupt()); // CTRL-C
-  }
-
-  /**
-   * accept rl line input
-   * @param line
-   */
-  private line(line: string) {
-    const chunk = line.replace(REG.TRAILSPC, '');
-    if (chunk) {
-      this.chunk.push(chunk);
-      if (chunk && !REG.LF.test(chunk)) { // not new line, resolve
-        this.resolve(this.chunk);
-      }
+  private prompt(): Prompt {
+    if (!this.io) {
+      this.io = Prompt.init({
+        prompt: this.getPromptText(),
+        historyExclusions: [ REG.COMMENT ],
+      });
+      this.io.interface()
+        .on('close', () => this.ioClosed());
     }
+    return this.io;
   }
 
   /**
-   * clear the readline output
+   * exit the prompt altogether
    */
-  private clearRl(): void {
-    return this.rl && this.rl.write(null, { ctrl: true, name: 'u' });
+  private exitPrompt(): void {
+    this.io.close();
+    this.io = null;
+  }
+
+  /**
+   * handle 'close' and CTRL-D for prompt
+   * 1. check if the prompt is open
+   * 2. noop if closed manually, teardown otherwise
+   */
+  private ioClosed(): any {
+    return this.io.isActive() && this._teardown(0);
   }
 
   /**
    * get the readline prompt string
    */
-  private rlPrompt(): string {
+  private getPromptText(): string {
     const { red, green, yellow, dim } = this.ui.color;
     const p: string[] = [yellow(this.options.promptText)];
     if (null != this.succeeded) {
-      p.push(dim(this.succeeded ? green('✔') : red('✘')));
+      p.push(dim(this.succeeded ? green(' ✔') : red(' ✘')));
     }
-    p.push(dim('$> '));
-    return p.join(' ');
-  }
-
-  /**
-   * create a readline interface
-   */
-  private rlConnect(): void {
-    this.rl = this.getRl();
-    this.disconnected = false;
-    this.hMarker = this.history.length;
-  }
-
-  /**
-   * close the readline (without exit)
-   */
-  private rlDisconnect(): void {
-    this.disconnected = true;
-    this.rl.close();
-    this.rl = null;
-  }
-
-  /**
-   * called either when EOT (ctrl-D) and on explicit close between commands;
-   */
-  private async rlClosed() {
-    if (!this.disconnected) {
-      await this._teardown(0);
-    }
-  }
-
-  /**
-   * CTRL-C handler on the readline
-   */
-  private rlInterrupt() {
-    // resolve null to start new
-    return this.resolve && this.resolve(null);
+    p.push(dim('> '));
+    return p.join('');
   }
 
   /**
@@ -197,51 +142,23 @@ export class HostCommand extends BaseCommand {
    */
   private async next(): Promise<void> {
     // prompt
-    const text = await this.prompt().catch(e => null);
+    const text: Chunk[] = await this.prompt().multiline().catch(e => null);
     // process
     await this.processInput(text);
     this.next();
   }
 
   /**
-   * begin prompt
-   */
-  private prompt() : Promise<Chunk[]> {
-    return new Promise((resolve, reject) => {
-      this.chunk = [];
-      this.rlConnect();
-
-      // set hooks
-      this.resolve = (chunks: Chunk[]) => {
-        this.resolve = null;
-        resolve(chunks);
-      };
-      this.cancel = () => {
-        this.chunk = [];
-        this.cancel = null;
-        reject();
-      };
-      // begin
-      this.rl.prompt();
-    });
-  }
-
-  /**
    * process input text
-   * @param text
+   * @param chunks
    */
-  private async processInput(text: Chunk[]): Promise<void> {
+  private async processInput(chunks: Chunk[]): Promise<void> {
+    const { mock } = this.options;
 
-    if (!text || !text.length) {
-      // clear line
-      this.clearRl();
-      return;
-    }
+    const raw = chunks.join(EOL); // raw input (with \EOL)
+    const input = chunks.map(t => t.replace(REG.LF, '')).join(' '); // executable
 
-    const raw = text.join(EOL); // raw input (with \EOL)
-    const input = text.map(t => t.replace(REG.LF, '')).join(' ');
-
-    // handle controls
+    // handle input controls
     if (CONTROLS.QUIT.indexOf(input) > -1) { // quit
       return this._teardown(0);
     } else if (REG.COMMENT.test(input)) { // comment
@@ -249,22 +166,18 @@ export class HostCommand extends BaseCommand {
       return;
     }
 
-    // disconnect readline to allow inherit stdio
-    this.rlDisconnect();
+    // disconnect prompt to allow inherit stdio
+    this.exitPrompt();
 
-    // execute command from `text`
+    // execute command from `input`
     this.child = child.spawn(input, {
       stdio: 'inherit',
       shell: true,
     });
 
-    // push history record
-    const hist: PromptResult = { input };
-    this.history.push(hist);
-
     // post to webhook
     this.callWebhook(WebhookType.MESSAGE, { input: raw })
-      .then(res => res && (hist.id = res.id)); // assign messageId result to history object
+      .then(res => res && (Prompt.last().id = res.id)); // assign messageId result to history object
 
     await ChildPromise
       .resolve(this.child)
@@ -274,21 +187,29 @@ export class HostCommand extends BaseCommand {
     this.child = null;
   }
 
+  /**
+   * append message with comment
+   * @param input prompt input
+   */
   private async appendComment(input: string) {
     const comment = input.replace(REG.COMMENT, '');
-    const last = this.history[this.history.length - 1];
+    const last = Prompt.last();
     if (!last) {
       return this.warn('Input must be submitted before a comment can be added');
     }
     return this.callWebhook(WebhookType.COMMENT, { id: last.id, comment });
   }
 
+  /**
+   * invoke the webhook
+   * @param type
+   * @param payload
+   */
   private async callWebhook<T extends WebhookType>(type: T, payload: WebhookPayload[T] ): Promise<WebhookResponse> {
-    const headers = { 'authorization': `Bearer ${this.jwToken}` };
+    const { mock } = this.options;
     // post to webhook
-    return await this.http.request(this.webhook.href, {
+    return !mock && await this.http.request(this.webhook.href, {
       method: 'POST',
-      headers,
       body: { type, payload },
     })
     .then(r => r.data)
