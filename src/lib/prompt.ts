@@ -54,6 +54,14 @@ export class Prompt {
     return this.history[this.history.length - 1];
   }
 
+  public static toChunks(str: Chunk): Chunk[] {
+    return str.split(/\r?\n/);
+  }
+
+  public static toSingle(chunks: Chunk[]): Chunk {
+    return (chunks || []).map(t => t.replace(REG.LF, '')).join(' ');
+  }
+
   constructor(options: PromptOptions, protected readonly secure?: boolean) {
     this._options = {
       ...Prompt.defaults,
@@ -87,7 +95,7 @@ export class Prompt {
    * @param chunks input chunks
    */
   private _finish(chunks: Chunk[]): void {
-    this._addHistory(chunks);
+    this.addHistory(chunks);
     // resolve
     const r = this._resolver;
     this._resolver = null;
@@ -98,16 +106,24 @@ export class Prompt {
    * add history
    * @param chunks raw chunks
    */
-  private _addHistory(chunks: Chunk[]): void {
+  public addHistory(chunks: Chunk | Chunk[]): void {
+    if (typeof chunks === 'string') {
+      chunks = Prompt.toChunks(chunks);
+    }
     if (chunks && chunks.length) { // add history
       const { historyExclusions } = this._options;
-      const input = chunks.map(t => t.replace(REG.LF, '')).join(' ');
+      const input = Prompt.toSingle(chunks);
       if (historyExclusions && historyExclusions.some(ex => ex.test(input))) {
         return;
       }
       const hist: PromptResult = { input };
-      this._history.push(hist);
-      Prompt.history.push(hist);
+      this._history.push(hist); // add to current
+      Prompt.history.push(hist); // add to persist
+
+      // update marker
+      if (this._historyMarker === this._history.length - 1) {
+         this._historyMarker = this._history.length;
+      }
     }
   }
 
@@ -181,6 +197,7 @@ export class Prompt {
    * clear the readline output
    */
   public clear(): void {
+    this._chunks = [];
     return this.interface()
       .write(null, { ctrl: true, name: 'u' });
   }

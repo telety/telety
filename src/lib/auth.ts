@@ -7,6 +7,11 @@ import { HttpClient } from './http';
 
 export type AuthnToken = string;
 export type AuthzToken = string;
+export type AuthUrl = string | url.Url;
+export interface AuthResult {
+  endpoint: string;
+  token: AuthzToken;
+}
 
 const UI = new _UI_.Writer();
 const HTTP = new HttpClient();
@@ -16,7 +21,7 @@ const HTTP = new HttpClient();
  * @param apiUrl a telety api endpoint
  * @param authn telety user auth token
  */
-export async function TeletyAuth(apiUrl: string | url.Url, authn?: AuthnToken): Promise<AuthzToken> {
+export async function TeletyAuth(apiUrl: AuthUrl, authn?: AuthnToken): Promise<AuthResult> {
   const { TELETY_TOKEN } = process.env;
   const { cyan, yellow, red, green, bold, dim } = UI.color;
   let ant = authn;
@@ -37,17 +42,22 @@ export async function TeletyAuth(apiUrl: string | url.Url, authn?: AuthnToken): 
 
   // request JWT
   const u = typeof apiUrl === 'object' ? apiUrl : url.parse(apiUrl);
-  const tokenURL = `${u.protocol}//${u.host}/auth/token`;
+  const endpoint = `${u.protocol}//${u.host}`; // TODO: handle API version component
+  const tokenURL = `${endpoint}/auth/token`;
   UI.append(dim(`telety.connecting...`));
   try {
     const auth = await HTTP.request(tokenURL, {
       method: 'POST',
       headers: { [HEADERS.XAUTH]: ant },
     });
-    UI.append(green('✔'));
-    return auth.headers[HEADERS.XAUTH.toLowerCase()] as string;
+    UI.output(green('✔'));
+    const token = auth.headers[HEADERS.XAUTH.toLowerCase()] as AuthzToken;
+    return {
+      token,
+      endpoint,
+    };
   } catch (e) {
-    UI.append(red('✘')).output();
+    UI.output(red('✘'));
     throw (e);
   }
 }

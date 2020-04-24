@@ -9,10 +9,10 @@ export type HttpOptions = (http.RequestOptions | https.RequestOptions) & {
   query?: any,
 }
 
-export interface HttpResponse {
+export interface HttpResponse<T = any> {
   statusCode: number;
-  headers: http.IncomingHttpHeaders,
-  data: any;
+  headers: http.IncomingHttpHeaders;
+  data: T;
 }
 
 /**
@@ -34,13 +34,17 @@ export class HttpClient {
     return this;
   }
 
+  public getHeaders(): http.OutgoingHttpHeaders {
+    return this._defaults.headers || {};
+  }
+
   /**
    * Make an signed API request
    * @param {string} url - Https API URL
    * @param {HttpOptions} [options] - https request options @see https://nodejs.org/api/https.html#https_https_request_url_options_callback
    * @returns {Promise<HttpResponse>}
    */
-  public request(url: string, options: HttpOptions = {}): Promise<HttpResponse> {
+  public request<T = any>(url: string, options: HttpOptions = {}): Promise<HttpResponse<T>> {
     return new Promise((resolve, reject) => {
       // process options
       options = {

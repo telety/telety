@@ -1,5 +1,7 @@
 import { CONTROLS } from './controls';
 
+export const TELETY = 'telety';
+
 export const REG = {
   LF: /\\$/,
   TRAILSPC: /\s+$/g,
