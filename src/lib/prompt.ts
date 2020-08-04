@@ -167,7 +167,7 @@ export class Prompt {
    * ask a single question
    * @param input the prompt question
    */
-  public async question(input: string) : Promise<string> {
+  public async question(input: string): Promise<string> {
     if (this.secure) {
       Prompt.defaults.output.write(input);
     }

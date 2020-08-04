@@ -4,7 +4,7 @@
 
 ## About
 
-Refer to [`telety.io docs`](../../docs)
+Refer to [`telety.io docs`](https://github.com/telety/docs)
 
 ## Usage
 
